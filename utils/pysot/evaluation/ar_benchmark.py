@@ -100,7 +100,7 @@ class AccuracyRobustnessBenchmark:
             print('-'*len(header1))
             videos = list(result[tracker_name]['overlaps'].keys())
             for video in videos:
-                row = "|{:^14}|".format(video)
+                ``row`` = "|{:^14}|".format(video)
                 for tracker_name in result.keys():
                     overlaps = result[tracker_name]['overlaps'][video]
                     accuracy = np.nanmean(overlaps)

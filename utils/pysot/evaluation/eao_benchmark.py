@@ -9,6 +9,7 @@
 import numpy as np
 
 from ..utils import calculate_failures, calculate_accuracy, calculate_expected_overlap
+import pandas as pd
 
 
 class EAOBenchmark:
@@ -94,6 +95,9 @@ class EAOBenchmark:
         all_failures = []
         video_names = []
         gt_traj_length = []
+        import math
+        df = pd.DataFrame(columns=["Name", "Overlap", "Failures"])
+        
         for video in self.dataset:
             gt_traj = video.gt_traj
             if tracker_name not in video.pred_trajs:
@@ -105,6 +109,85 @@ class EAOBenchmark:
                 video_names.append(video.name)
                 overlaps = calculate_accuracy(tracker_traj, gt_traj, bound=(video.width-1, video.height-1))[1]
                 failures = calculate_failures(tracker_traj)[1]
+                print("Name: {}. Overlap: {}. Failures: {}. Gt_length: {}".format(video.name, len(overlaps), failures, len(gt_traj)))
+                df.loc[len(df)] = [video.name, overlaps, failures]
+                # print("Name: {}. Overlap: {}. Failures: {}".format(video.name, overlaps[0 if len(failures)==0 else failures[0]], failures))
+                all_overlaps.append(overlaps)
+                all_failures.append(failures)
+        fragment_num = sum([len(x)+1 for x in all_failures])
+        max_len = max([len(x) for x in all_overlaps])
+        seq_weight = 1 / len(tracker_trajs)
+        
+        df.to_pickle("analysis.csv")
+
+        eao = {}
+        for tag in tags:
+            # prepare segments
+            fweights = np.ones((fragment_num)) * np.nan
+            fragments = np.ones((fragment_num, max_len)) * np.nan
+            seg_counter = 0
+            for name, traj_len, failures, overlaps in zip(video_names, gt_traj_length,
+                    all_failures, all_overlaps):
+                if len(failures) > 0:
+                    points = [x+self.skipping for x in failures if
+                            x+self.skipping <= len(overlaps)]
+                    points.insert(0, 0)
+                    for i in range(len(points)):
+                        if i != len(points) - 1:
+                            fragment = np.array(overlaps[points[i]:points[i+1]+1])
+                            fragments[seg_counter, :] = 0
+                        else:
+                            fragment = np.array(overlaps[points[i]:])
+                        fragment[np.isnan(fragment)] = 0
+                        fragments[seg_counter, :len(fragment)] = fragment
+                        if i != len(points) - 1:
+                            tag_value = self.dataset[name].select_tag(tag, points[i], points[i+1]+1)
+                            w = sum(tag_value) / (points[i+1] - points[i]+1)
+                            fweights[seg_counter] = seq_weight * w
+                        else:
+                            tag_value = self.dataset[name].select_tag(tag, points[i], len(overlaps))
+                            w = sum(tag_value) / (traj_len - points[i]+1e-16)
+                            fweights[seg_counter] = seq_weight * w
+                        seg_counter += 1
+                else:
+                    # no failure
+                    max_idx = min(len(overlaps), max_len)
+                    fragments[seg_counter, :max_idx] = overlaps[:max_idx]
+                    tag_value = self.dataset[name].select_tag(tag, 0, max_idx)
+                    w = sum(tag_value) / max_idx
+                    fweights[seg_counter] = seq_weight * w
+                    seg_counter += 1
+
+            expected_overlaps = calculate_expected_overlap(fragments, fweights)
+            # caculate eao
+            weight = np.zeros((len(expected_overlaps)))
+            weight[self.low-1:self.high-1+1] = 1
+            is_valid = np.logical_not(np.isnan(expected_overlaps))
+            eao_ = np.sum(expected_overlaps[is_valid] * weight[is_valid]) / np.sum(weight[is_valid])
+            eao[tag] = eao_
+        return eao
+
+    def _calculate_eao_saving_for_analysis(self, tracker_name, tags):
+
+        all_overlaps = []
+        all_failures = []
+        video_names = []
+        gt_traj_length = []
+        import math
+        
+        for video in self.dataset:
+            gt_traj = video.gt_traj
+            if tracker_name not in video.pred_trajs:
+                tracker_trajs = video.load_tracker(self.dataset.tracker_path, tracker_name, False)
+            else:
+                tracker_trajs = video.pred_trajs[tracker_name]
+            for tracker_traj in tracker_trajs:
+                gt_traj_length.append(len(gt_traj))
+                video_names.append(video.name)
+                overlaps = calculate_accuracy(tracker_traj, gt_traj, bound=(video.width-1, video.height-1))[1]
+                failures = calculate_failures(tracker_traj)[1]
+                print("Name: {}. Overlap: {}. Failures: {}".format(video.name, len([i for i in overlaps if  math.isnan(i)]), failures))
+                # print("Name: {}. Overlap: {}. Failures: {}".format(video.name, overlaps[0 if len(failures)==0 else failures[0]], failures))
                 all_overlaps.append(overlaps)
                 all_failures.append(failures)
         fragment_num = sum([len(x)+1 for x in all_failures])
